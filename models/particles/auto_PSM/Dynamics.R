@@ -8,6 +8,9 @@ if (Options$q19) {
     U = d3q19
 } else if (Options$q27) {
     U = d3q27
+    ## For ordering matching Nathan's model:
+    # w = c(1,2,3,4,5,6,7,16,17,18,19,20,21,22,23,24,25,26,27,8,9,10,11,12,13,14,15)
+    # U = U[w,]
 } else stop("Unknown")
 
 AddDensity( name=paste0("f",1:nrow(U)-1), dx=U[,1], dy=U[,2], dz=U[,3], group="f")
