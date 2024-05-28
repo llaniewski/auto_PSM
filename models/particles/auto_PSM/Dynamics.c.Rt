@@ -230,9 +230,6 @@ CudaDeviceFunction void Collision() {
     u_post = solB*(2*uP-u) + (1-solB)*(u+a)
 	EQ_post = MRT_eq(U, d, u_post*d, ortogonal=FALSE, mat=M)
 
-    deriv.gvector = function(obj_, what) {
-        gapply(obj_, deriv, what)
-    }
     der.gvector = function(obj_) gapply(obj_, der)
     F = subst(
         der(EQ$feq),
