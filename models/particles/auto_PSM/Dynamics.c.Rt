@@ -68,18 +68,6 @@ CudaDeviceFunction vector_t getUP() {
 CudaDeviceFunction real_t getSolid() { return sol; }
 CudaDeviceFunction real_t getB() { return solB; }
 
-CudaDeviceFunction void Init() {
-	real_t d,ux,uy,uz;
-    d = 1.0 + 3.0*Pressure;
-	ux = VelocityX;
-    uy = VelocityY;
-    uz = VelocityZ;
-    <?R
-        EQ = MRT_eq(U, d, d*u, ortogonal=FALSE);
-        C(f, EQ$feq)
-    ?>
-}
-
 
 CudaDeviceFunction void Run() {
     RunBoundaries();
@@ -181,7 +169,7 @@ CudaDeviceFunction void CalcF() {
     real_t ux, uy, uz, d;
 <?R
 	C( d, sum(f) )
-	C( u, f %*% U * d^{-1} + a*0.5 )
+	C( u, f %*% U * d^{-1} )
 	C( uP, 0)
 	C( sol, 0)
 ?>
@@ -300,6 +288,88 @@ CudaDeviceFunction void Collision() {
 	C( f, RL %*% solve(M))
 ?>
 }
+
+CudaDeviceFunction void Init() {
+	real_t d,uhatx,uhaty,uhatz;
+    d = 1.0 + 3.0*Pressure;
+	uhatx = VelocityX;
+    uhaty = VelocityY;
+    uhatz = VelocityZ;
+<?R
+    uhat = PV("uhat",xyz)
+	C( uP, 0)
+	C( sol, 0)
+?>
+	for (auto p : ParticleIterator(X,Y,Z)) {
+        real_t dist = sqrt(p.diff.x*p.diff.x + p.diff.y*p.diff.y + p.diff.z*p.diff.z);
+        if ((dist - p.rad) < 0.5) {
+            real_t localCoverage = 0.0;
+            if ((dist - p.rad) < -1.0){
+                localCoverage = 1.0;
+            } else{
+                localCoverage = (p.rad -  0.084/p.rad + 0.5 - dist);
+            }
+            if (localCoverage > 1.0){ localCoverage =  1.0;}
+            if (localCoverage < 0.0){ localCoverage =  0.0;}
+            sol = sol + localCoverage;
+            <?R C(uP, uP + uparticle*localCoverage) ?>
+        }
+    }
+
+	real_t sol_factor = 1.0;
+    if (sol > 1.0e-8) sol_factor = 1.0/sol;
+    <?R C(uP, uP * sol_factor) ?>
+    
+    if (sol > 1.0) sol = 1.0;
+
+    switch (NodeType & NODE_TRANSFER) {
+    case NODE_None:
+        solB = sol;
+        break;
+    case NODE_TN:
+        solB = sol*3*nu / (1 - sol + 3*nu);
+        break;
+    case NODE_LLW:
+   		real_t vf = sol;
+		real_t khat = nu*vf*(3-2*vf)/(2.0*(1-vf)*(1-vf) + nu*vf*(3-2*vf));
+		solB = khat;
+        break;
+    }
+
+    real_t omegaF = 1.0/(3.0*nu+0.5);
+    real_t omegaF1 = 1.0 - omegaF;
+    real_t omegaP1 = omegaF1;
+
+    switch (NodeType & NODE_COLLISION) {
+    case NODE_TRT:
+        real_t omegaP = 1.0/(Lambda/(1.0/omegaF1-0.5)+0.5);
+        omegaP1 = 1.0 - omegaP;
+        break;
+    }
+
+    switch (NodeType & NODE_FORCING) {
+    <?R for (n in names(collisions)) { ?>
+    case NODE_<?%s n ?>: { <?R
+    # u = uhat - F(uhat)/2
+    # u* = u + F(uhat)
+    # F(uhat) = u* - u
+    # uhat = u + F(uhat)/2
+    # uhat = u + (u* - u)/2 = (u* + u)/2
+        mom1 = collisions[[n]][2:4]
+        mom1 = (subst(mom1, solB=0) + mom1)*0.5
+        mom1 = mom1 * d^{-1}
+        for (i in 1:3) C_pull((mom1 - uhat)[i], ToC(u)[i])
+    ?> } break;
+    <?R } ?>
+    }
+    <?R
+        EQ = MRT_eq(U, d, d*u, ortogonal=FALSE);
+        C(f, EQ$feq)
+    ?>
+    CalcF();
+    RunCollision();
+}
+
 
 CudaDeviceFunction float2 Color() {
     float2 ret;

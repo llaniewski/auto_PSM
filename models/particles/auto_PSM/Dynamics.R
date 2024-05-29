@@ -61,11 +61,11 @@ if (Options$singlekernel) {
         AddAction("Iteration", "BaseIteration")
         AddAction("Init", "BaseInit")
 } else {
-        AddStage("BaseInit", "Init", save = Fields$group %in% "f", load = FALSE)
+        AddStage("BaseInit", "Init", save = TRUE, load = FALSE, particle=TRUE)
         AddStage("BaseIteration", "Run", save = Fields$group %in% "f", load = TRUE)
         AddStage("CalcF", save = Fields$group %in% "Force", load = DensityAll$group %in% "f", particle=TRUE)
         AddAction("Iteration", c("BaseIteration", "CalcF"))
-        AddAction("Init", c("BaseInit", "CalcF"))
+        AddAction("Init", c("BaseInit"))
 }
 
 AddNodeType(name="Wall", group="COLLISION")
