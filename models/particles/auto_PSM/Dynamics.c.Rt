@@ -125,8 +125,7 @@ CudaDeviceFunction void <?%s bc$name ?>() {
     }
 ?>
 
-CudaDeviceFunction void CalcF() {
-    real_t ux, uy, uz, d;
+
 <?R
 	d = PV("d")
 	u = PV("u",xyz)
@@ -138,13 +137,54 @@ CudaDeviceFunction void CalcF() {
     sol_factor = PV("sol_factor")
     uparticle = PV("p.cvel.",xyz)
     force = PV("force.",xyz)
+	R = PV("R[",seq_len(nrow(U))-1,"]")
+	M = MRT_polyMatrix(U)$mat
 
+    uh = u + a*0.5
+
+	RL = R
+	R[1] = d
+	R[2:4] = u*d
+	EQ   = MRT_eq(U, d, u*d, ortogonal=FALSE, mat=M);
+	EQ_H   = MRT_eq(U, d, uh*d, ortogonal=FALSE, mat=M);
+	EQ_P = MRT_eq(U, d, uP*d, ortogonal=FALSE, mat=M)
+    # (u_post+u)/2 = solB*uP + (1-solB)*(u+a/2)
+    u_post = solB*(2*uP-u) + (1-solB)*(u+a)
+	EQ_post = MRT_eq(U, d, u_post*d, ortogonal=FALSE, mat=M)
+
+    der.gvector = function(obj_) gapply(obj_, der)
+    F = subst(
+        der(EQ$feq),
+        d_d=0,
+        ux_d=a[1],uy_d=a[2],uz_d=a[3],
+        ux=uh[1],uy=uh[2],uz=uh[3]
+    )
+
+    bounce = Bounce(U)
+	B = solve(M, M[bounce,]) # Bounce-back matrix
+
+	omegaF1 = PV(c("omegaF1"))
+	omegaP1 = PV(c("omegaP1"))
+    omega = V(1.0 - omegaF1,1.0 - omegaP1)[EQ$order %% 2 + 1]
+
+    collisions = list()
+    RomegaS =  R %*% B - R + EQ_P$Req - EQ_H$Req %*% B #Non-eq bounceback operator
+    collisions[["NEBB"]] = R + (1.0-solB)*(omega*(EQ_H$Req - R) + (1.0 - omega*0.5)*(F %*% M)) + solB*RomegaS
+    RomegaS =  EQ_P$Req - R + (1.0 - omega)*(R - EQ_H$Req) #Superposition operator
+    collisions[["SUP"]] = R + (1.0-solB)*(omega*(EQ_H$Req - R) + (1.0 - omega*0.5)*(F %*% M)) + solB*RomegaS
+    collisions[["EDM"]] = (1-omega)*(R - EQ$Req) + EQ_post$Req
+    RomegaS =  R %*% B - R + EQ_P$Req - EQ_P$Req %*% B #Moving wall bounceback operator
+    collisions[["MWBB"]] = R + (1.0-solB)*(omega*(EQ_H$Req - R) + (1.0 - omega*0.5)*(F %*% M)) + solB*RomegaS
+?>
+
+CudaDeviceFunction void CalcF() {
+    real_t ux, uy, uz, d;
+<?R
 	C( d, sum(f) )
 	C( u, f %*% U * d^{-1} + a*0.5 )
 	C( uP, 0)
 	C( sol, 0)
 ?>
-
 	for (auto p : ParticleIterator(X,Y,Z)) {
         real_t dist = sqrt(p.diff.x*p.diff.x + p.diff.y*p.diff.y + p.diff.z*p.diff.z);
         if ((dist - p.rad) < 0.5) {
@@ -182,7 +222,27 @@ CudaDeviceFunction void CalcF() {
     }
     
     vector_t force;
-    <?R C(force, solB*(u - uP)) ?>
+
+    real_t omegaF = 1.0/(3.0*nu+0.5);
+    real_t omegaF1 = 1.0 - omegaF;
+    real_t omegaP1 = omegaF1;
+
+    switch (NodeType & NODE_COLLISION) {
+    case NODE_TRT:
+        real_t omegaP = 1.0/(Lambda/(1.0/omegaF1-0.5)+0.5);
+        omegaP1 = 1.0 - omegaP;
+        break;
+    }
+
+    switch (NodeType & NODE_FORCING) {
+    <?R for (n in names(collisions)) { ?>
+    case NODE_<?%s n ?>: { <?R
+        mom1 = collisions[[n]][2:4]
+        mom1 = subst(mom1, solB=0) - mom1
+        mom1 = mom1 * d^{-1}
+        C(force, mom1); ?> } break;
+    <?R } ?>
+    }
     
 	for (auto p : SyncParticleIterator(X,Y,Z)) {
 
@@ -210,42 +270,6 @@ CudaDeviceFunction void CalcF() {
 CudaDeviceFunction void Collision() {
 	real_t ux, uy, uz, d, R[27];
 <?R
-	d = PV("d")
-    u = PV("u",xyz)
-    uP = PV("uP",xyz)
-    a = PV("Accel", XYZ)
-	R = PV("R[",seq_len(nrow(U))-1,"]")
-
-	M = MRT_polyMatrix(U)$mat
-
-    uh = u + a*0.5
-
-	RL = R
-	R[1] = d
-	R[2:4] = u*d
-	EQ   = MRT_eq(U, d, u*d, ortogonal=FALSE, mat=M);
-	EQ_H   = MRT_eq(U, d, uh*d, ortogonal=FALSE, mat=M);
-	EQ_P = MRT_eq(U, d, uP*d, ortogonal=FALSE, mat=M)
-    # (u_post+u)/2 = solB*uP + (1-solB)*(u+a/2)
-    u_post = solB*(2*uP-u) + (1-solB)*(u+a)
-	EQ_post = MRT_eq(U, d, u_post*d, ortogonal=FALSE, mat=M)
-
-    der.gvector = function(obj_) gapply(obj_, der)
-    F = subst(
-        der(EQ$feq),
-        d_d=0,
-        ux_d=a[1],uy_d=a[2],uz_d=a[3],
-        ux=uh[1],uy=uh[2],uz=uh[3]
-    )
-
-    bounce = Bounce(U)
-	B = solve(M, M[bounce,]) # Bounce-back matrix
-
-	omegaF1 = PV(c("omegaF1"))
-	omegaP1 = PV(c("omegaP1"))
-	
-    omega = V(1.0 - omegaF1,1.0 - omegaP1)[EQ$order %% 2 + 1]
-	
     C( RL, f %*% M)
 	C( d, RL[1])
 	C( u, RL[2:4]*d^{-1})
@@ -268,17 +292,9 @@ CudaDeviceFunction void Collision() {
     }
 
     switch (NodeType & NODE_FORCING) {
-    case NODE_NEBB: { <?R
-        RomegaS =  R %*% B - R + EQ_P$Req - EQ_H$Req %*% B #Non-eq bounceback operator
-        C( RL, R + (1.0-solB)*(omega*(EQ_H$Req - R) + (1.0 - omega*0.5)*(F %*% M)) + solB*RomegaS)
-    ?> } break;
-    case NODE_SUP: { <?R
-        RomegaS =  EQ_P$Req - R + (1.0 - omega)*(R - EQ_H$Req) #Superposition operator
-        C( RL, R + (1.0-solB)*(omega*(EQ_H$Req - R) + (1.0 - omega*0.5)*(F %*% M)) + solB*RomegaS)
-    ?> } break;
-    case NODE_EDM: { <?R
-        C( RL, (1-omega)*(R - EQ$Req) + EQ_post$Req)
-    ?> } break;
+    <?R for (n in names(collisions)) { ?>
+    case NODE_<?%s n ?>: { <?R C(RL, collisions[[n]]); ?> } break;
+    <?R } ?>
     }
 <?R
 	C( f, RL %*% solve(M))
