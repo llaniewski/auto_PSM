@@ -31,13 +31,20 @@ Code updates:
 
 <?R
 	f = PV(DensityAll$name[DensityAll$group=="f"])
-
-	u = PV("u",xyz)
 	d = PV("d")
-
-	rho = PV("rho")
-	J = PV("J",xyz)
-
+	u = PV("u",xyz)
+	uP = PV("uP",xyz)
+    uvec = PV("u.",xyz)
+	a = PV("Accel", XYZ)
+	sol = PV("sol")
+    solB = PV("solB")
+    localCoverage = PV("localCoverage")
+    sol_factor = PV("sol_factor")
+    uparticle = PV("p.cvel.",xyz)
+    force = PV("force.",xyz)
+    fparticle = PV("fparticle.",xyz)
+	R = PV("R[",seq_len(nrow(U))-1,"]")
+	M = MRT_polyMatrix(U)$mat
 ?>
 
 CudaDeviceFunction real_t getP(){
@@ -50,24 +57,21 @@ CudaDeviceFunction vector_t getU(){
     RunBoundaries();
 	real_t d = <?R C(sum(f)) ?>;
 	vector_t u;
-<?R C(PV("u.",xyz), f %*% U) ?>
+    <?R C(uvec, f %*% U) ?>
     RunCollision();
-<?R C(PV("u.",xyz), PV("u.",xyz) + f %*% U) ?>
-	u.x = u.x/(2*d);
-	u.y = u.y/(2*d);
-	u.z = u.z/(2*d);
+    <?R C(uvec, (uvec + f %*% U)*0.5*d^{-1}) ?>
 	return u;
 }
 
 CudaDeviceFunction vector_t getUP() {
     vector_t u;
-    u.x = uPx; u.y = uPy; u.z = uPz;
+    <?R C(uvec, uP) ?>
     return u;
 }
 
 CudaDeviceFunction real_t getSolid() { return sol; }
-CudaDeviceFunction real_t getB() { return solB; }
 
+CudaDeviceFunction real_t getB() { return solB; }
 
 CudaDeviceFunction void Run() {
     RunBoundaries();
@@ -100,12 +104,13 @@ CudaDeviceFunction void RunCollision() {
 }
 
 CudaDeviceFunction void BounceBack() {
-<?R FullBounceBack() ?>
+    <?R FullBounceBack() ?>
 }
 
 <?R
-	EQ = MRT_eq(U, rho, J, ortogonal=FALSE);
-    for (bc in rows(BC)) { ?>
+	EQ = MRT_eq(U, PV("rho"), PV("J",xyz), ortogonal=FALSE);
+    for (bc in rows(BC)) {
+?>
 CudaDeviceFunction void <?%s bc$name ?>() {
     <?R ZouHe(EQ, bc$direction, bc$sign, bc$type, group=f, P=PV("Pressure"), V=PV("Velocity",XYZ)[bc$direction]) ?>
 }
@@ -113,30 +118,14 @@ CudaDeviceFunction void <?%s bc$name ?>() {
     }
 ?>
 
-
 <?R
-	d = PV("d")
-	u = PV("u",xyz)
-	uP = PV("uP",xyz)
-	a = PV("Accel", XYZ)
-	sol = PV("sol")
-    solB = PV("solB")
-    localCoverage = PV("localCoverage")
-    sol_factor = PV("sol_factor")
-    uparticle = PV("p.cvel.",xyz)
-    force = PV("force.",xyz)
-	R = PV("R[",seq_len(nrow(U))-1,"]")
-	M = MRT_polyMatrix(U)$mat
-
-    uh = u + a*0.5
-
 	RL = R
 	R[1] = d
 	R[2:4] = u*d
 	EQ   = MRT_eq(U, d, u*d, ortogonal=FALSE, mat=M);
+    uh = u + a*0.5
 	EQ_H   = MRT_eq(U, d, uh*d, ortogonal=FALSE, mat=M);
 	EQ_P = MRT_eq(U, d, uP*d, ortogonal=FALSE, mat=M)
-    # (u_post+u)/2 = solB*uP + (1-solB)*(u+a/2)
     u_post = solB*(2*uP-u) + (1-solB)*(u+a)
 	EQ_post = MRT_eq(U, d, u_post*d, ortogonal=FALSE, mat=M)
 
@@ -165,25 +154,26 @@ CudaDeviceFunction void <?%s bc$name ?>() {
     collisions[["MWBB"]] = R + (1.0-solB)*(omega*(EQ_H$Req - R) + (1.0 - omega*0.5)*(F %*% M)) + solB*RomegaS
 ?>
 
+template <class T>
+CudaDeviceFunction real_t CalcCoverage(const T& p) {
+    real_t dist = sqrt(p.diff.x*p.diff.x + p.diff.y*p.diff.y + p.diff.z*p.diff.z);
+    real_t localCoverage = (p.rad -  0.084/p.rad + 0.5 - dist);
+    if (localCoverage > 1.0) return 1.0;
+    if (localCoverage < 0.0) return 0.0;
+    return localCoverage;
+}
+
 CudaDeviceFunction void CalcF() {
     real_t ux, uy, uz, d;
-<?R
-	C( d, sum(f) )
-	C( u, f %*% U * d^{-1} )
-	C( uP, 0)
-	C( sol, 0)
-?>
+    <?R
+        C( d, sum(f) )
+        C( u, f %*% U * d^{-1} )
+        C( uP, 0)
+        C( sol, 0)
+    ?>
 	for (auto p : ParticleIterator(X,Y,Z)) {
-        real_t dist = sqrt(p.diff.x*p.diff.x + p.diff.y*p.diff.y + p.diff.z*p.diff.z);
-        if ((dist - p.rad) < 0.5) {
-            real_t localCoverage = 0.0;
-            if ((dist - p.rad) < -1.0){
-                localCoverage = 1.0;
-            } else{
-                localCoverage = (p.rad -  0.084/p.rad + 0.5 - dist);
-            }
-            if (localCoverage > 1.0){ localCoverage =  1.0;}
-            if (localCoverage < 0.0){ localCoverage =  0.0;}
+        real_t localCoverage = CalcCoverage(p);
+        if (localCoverage > 0) {
             sol = sol + localCoverage;
             <?R C(uP, uP + uparticle*localCoverage) ?>
         }
@@ -233,23 +223,10 @@ CudaDeviceFunction void CalcF() {
     }
     
 	for (auto p : SyncParticleIterator(X,Y,Z)) {
-
-        real_t dist = sqrt(p.diff.x*p.diff.x + p.diff.y*p.diff.y + p.diff.z*p.diff.z);
-                    
-        if ((dist - p.rad) < 0.5) {
-            real_t localCoverage = 0.0;
-            if ((dist - p.rad) < -1.0){
-                localCoverage = 1.0;
-            } else{
-                localCoverage = (p.rad -  0.084/p.rad + 0.5 - dist);
-            }
-            if (localCoverage > 1.0){ localCoverage =  1.0;}
-            if (localCoverage < 0.0){ localCoverage =  0.0;}
+        real_t localCoverage = CalcCoverage(p);
+        if (localCoverage > 0) {
             vector_t fparticle;
-<?R
-            fparticle = PV("fparticle.",xyz)
-            C(fparticle, force * localCoverage * sol_factor)
-?>
+            <?R C(fparticle, force * localCoverage * sol_factor) ?>
             p.applyForce(fparticle);
         }
     }
@@ -257,11 +234,11 @@ CudaDeviceFunction void CalcF() {
 
 CudaDeviceFunction void Collision() {
 	real_t ux, uy, uz, d, R[27];
-<?R
-    C( RL, f %*% M)
-	C( d, RL[1])
-	C( u, RL[2:4]*d^{-1})
-?>
+    <?R
+        C( RL, f %*% M)
+        C( d, RL[1])
+        C( u, RL[2:4]*d^{-1})
+    ?>
     AddToTotalFluidMomentumX(d*ux);
     AddToTotalFluidMomentumY(d*uy);
     AddToTotalFluidMomentumZ(d*uz);
@@ -284,85 +261,31 @@ CudaDeviceFunction void Collision() {
     case NODE_<?%s n ?>: { <?R C(RL, collisions[[n]]); ?> } break;
     <?R } ?>
     }
-<?R
-	C( f, RL %*% solve(M))
-?>
+    <?R	C( f, RL %*% solve(M)) ?>
 }
 
 CudaDeviceFunction void Init() {
-	real_t d,uhatx,uhaty,uhatz;
+	real_t d,ux,uy,uz;
     d = 1.0 + 3.0*Pressure;
-	uhatx = VelocityX;
-    uhaty = VelocityY;
-    uhatz = VelocityZ;
-<?R
-    uhat = PV("uhat",xyz)
-	C( uP, 0)
-	C( sol, 0)
-?>
+	ux = VelocityX;
+    uy = VelocityY;
+    uz = VelocityZ;
+    <?R
+        C( uP, 0)
+        C( sol, 0)
+    ?>
 	for (auto p : ParticleIterator(X,Y,Z)) {
-        real_t dist = sqrt(p.diff.x*p.diff.x + p.diff.y*p.diff.y + p.diff.z*p.diff.z);
-        if ((dist - p.rad) < 0.5) {
-            real_t localCoverage = 0.0;
-            if ((dist - p.rad) < -1.0){
-                localCoverage = 1.0;
-            } else{
-                localCoverage = (p.rad -  0.084/p.rad + 0.5 - dist);
-            }
-            if (localCoverage > 1.0){ localCoverage =  1.0;}
-            if (localCoverage < 0.0){ localCoverage =  0.0;}
+        real_t localCoverage = CalcCoverage(p);
+        if (localCoverage > 0) {
             sol = sol + localCoverage;
             <?R C(uP, uP + uparticle*localCoverage) ?>
         }
     }
-
 	real_t sol_factor = 1.0;
     if (sol > 1.0e-8) sol_factor = 1.0/sol;
-    <?R C(uP, uP * sol_factor) ?>
-    
-    if (sol > 1.0) sol = 1.0;
-
-    switch (NodeType & NODE_TRANSFER) {
-    case NODE_None:
-        solB = sol;
-        break;
-    case NODE_TN:
-        solB = sol*3*nu / (1 - sol + 3*nu);
-        break;
-    case NODE_LLW:
-   		real_t vf = sol;
-		real_t khat = nu*vf*(3-2*vf)/(2.0*(1-vf)*(1-vf) + nu*vf*(3-2*vf));
-		solB = khat;
-        break;
-    }
-
-    real_t omegaF = 1.0/(3.0*nu+0.5);
-    real_t omegaF1 = 1.0 - omegaF;
-    real_t omegaP1 = omegaF1;
-
-    switch (NodeType & NODE_COLLISION) {
-    case NODE_TRT:
-        real_t omegaP = 1.0/(Lambda/(1.0/omegaF1-0.5)+0.5);
-        omegaP1 = 1.0 - omegaP;
-        break;
-    }
-
-    switch (NodeType & NODE_FORCING) {
-    <?R for (n in names(collisions)) { ?>
-    case NODE_<?%s n ?>: { <?R
-    # u = uhat - F(uhat)/2
-    # u* = u + F(uhat)
-    # F(uhat) = u* - u
-    # uhat = u + F(uhat)/2
-    # uhat = u + (u* - u)/2 = (u* + u)/2
-        mom1 = collisions[[n]][2:4]
-        mom1 = (subst(mom1, solB=0) + mom1)*0.5
-        mom1 = mom1 * d^{-1}
-        for (i in 1:3) C_pull((mom1 - uhat)[i], ToC(u)[i])
-    ?> } break;
-    <?R } ?>
-    }
     <?R
+        C(uP, uP * sol_factor)
+        C(u, u + (uP - u)*sol)
         EQ = MRT_eq(U, d, d*u, ortogonal=FALSE);
         C(f, EQ$feq)
     ?>
