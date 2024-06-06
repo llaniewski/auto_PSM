@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<CLBConfig version="2.0" permissive="true" output="output/">
+	<Units>
+		<Param name="D" value="1m" gauge="16"/>
+		<Param name="H" value="1x" gauge="4m"/>
+		<Param name="L" value="1y" gauge="10m"/>
+		<Param name="U" value="1m/s" gauge="0.01"/>
+		<Param name="rho" value="1kg/m3" gauge="1"/>
+	</Units>
+	<Geometry nx="1x" ny="1x" nz="2y">
+		<BGK><Box/></BGK>
+		<EDM><Box/></EDM>
+		<TN><Box/></TN>
+		<LLW><Box/></LLW>
+		<SymmetryEdgeX_minus> <Box nx="1"/>  </SymmetryEdgeX_minus>
+		<SymmetryEdgeX_plus>  <Box dx="-1"/> </SymmetryEdgeX_plus>
+		<SymmetryEdgeY_minus> <Box ny="1"/>  </SymmetryEdgeY_minus>
+		<SymmetryEdgeY_plus>  <Box dy="-1"/> </SymmetryEdgeY_plus>
+		<SymmetryEdgeZ_minus> <Box nz="1"/>  </SymmetryEdgeZ_minus>
+		<SymmetryEdgeZ_plus>  <Box dz="-1"/> </SymmetryEdgeZ_plus>
+	</Geometry>
+	<Model>
+		<Param name="nu" value="1m2/s"/>
+        <RemoteForceInterface integrator="SIMPLEPART">
+			<SimplePart>
+				<Particle x="0" y="0" z="10" r="0.5" log="y" vz="-1" ease-in="1"/>
+				<!-- 1m/s 1s -->
+				<Log Iterations="1" rotation="true"/>
+			</SimplePart>			
+		</RemoteForceInterface>
+	</Model>
+	<VTK/>
+	<VTK Iterations="1s"/>
+	<Log Iterations="0.1s"/>
+	<Solve Iterations="10s"/>
+</CLBConfig>
