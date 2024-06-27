@@ -46,12 +46,14 @@ AddGlobal(name=paste0("TotalSolidMomentum",XYZ), unit="kgm/s")
 AddGlobal(name="TotalSolidMass", unit="kg")
 AddGlobal(name="TotalSolidVolume", unit="m3")
 
-BC = expand.grid(side=1:6, type_name=c("Velocity","Pressure"))
+BC = expand.grid(side=1:6, type_name=c("MovingWall","Velocity","Pressure"))
 BC$type = tolower(BC$type_name)
 BC$side_name = c("W","E","S","N","F","B")[BC$side]
 BC$direction = rep(1:3,each=2)[BC$side]
 BC$sign = rep(c(1,-1),times=3)[BC$side]
 BC$name = paste0(BC$side_name,BC$type_name)
+
+AddGlobal(name=paste0("MovingWallForce",XYZ), unit="N")
 
 AddNodeType(name=BC$name, group="BOUNDARY")
 

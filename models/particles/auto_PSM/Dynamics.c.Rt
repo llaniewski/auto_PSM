@@ -109,10 +109,27 @@ CudaDeviceFunction void BounceBack() {
 
 <?R
 	EQ = MRT_eq(U, PV("rho"), PV("J",xyz), ortogonal=FALSE);
+    f_old = PV(DensityAll$name[DensityAll$group=="f"],"_old")
+    f_fetch = PV(DensityAll$name[DensityAll$group=="f"],"(0,0,0)")
+    b = Bounce(U)
     for (bc in rows(BC)) {
 ?>
 CudaDeviceFunction void <?%s bc$name ?>() {
-    <?R ZouHe(EQ, bc$direction, bc$sign, bc$type, group=f, P=PV("Pressure"), V=PV("Velocity",XYZ)[bc$direction]) ?>
+<?R
+    if (bc$type %in% c("pressure","velocity")) {
+        ZouHe(EQ, bc$direction, bc$sign, bc$type, group=f, P=PV("Pressure"), V=PV("Velocity",XYZ)[bc$direction])
+    } else if (bc$type == "movingwall") {
+        sel = U[,bc$direction]*bc$sign < 0
+        Velocity = PV("Velocity",XYZ)
+        Velocity[bc$direction] = 0
+        EQ_V = MRT_eq(U, PV(1), Velocity, ortogonal=FALSE);
+        f_bounce = (f_old - EQ_V$feq) + EQ_V$feq[b]
+        cat("real_t",paste0(c_table_decl(ToC(f_old)[sel]),collapse=","),";\n")
+        C(f_old[sel],f_fetch[sel])
+        C(f[b][sel],f_bounce[sel])
+        mwf = ToC(f_bounce[sel] %*% U[b,][sel,] - f_old[sel] %*% U[sel,])
+        cat(paste0("AddToMovingWallForce",XYZ,"(",mwf,");\n"))
+    } ?>
 }
 <?R 
     }
@@ -145,6 +162,7 @@ CudaDeviceFunction void <?%s bc$name ?>() {
     omega = V(1.0 - omegaF1,1.0 - omegaP1)[EQ$order %% 2 + 1]
 
     collisions = list()
+    collisions[["NONE"]] = R + omega*(EQ_H$Req - R)
     RomegaS =  R %*% B - R + EQ_P$Req - EQ_H$Req %*% B #Non-eq bounceback operator
     collisions[["NEBB"]] = R + (1.0-solB)*(omega*(EQ_H$Req - R) + (1.0 - omega*0.5)*(F %*% M)) + solB*RomegaS
     RomegaS =  EQ_P$Req - R + (1.0 - omega)*(R - EQ_H$Req) #Superposition operator
